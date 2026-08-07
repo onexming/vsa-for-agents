@@ -10,11 +10,12 @@
 6. [新增功能 Checklist](#6-新增功能-checklist)
 7. [修改已有功能 Checklist](#7-修改已有功能-checklist)
 8. [提取共享模块 Checklist](#8-提取共享模块-checklist)
-9. [典型代码示例](#9-典型代码示例)
-10. [反模式识别](#10-反模式识别)
-11. [边界情况决策指南](#11-边界情况决策指南)
+9. [完整示例：新增“注册用户”切片](#9-完整示例新增注册用户切片)
+10. [边界情况决策指南](#10-边界情况决策指南)
 
 ---
+
+> 本文示例使用 Python 说明目录边界和依赖关系，不要求其他语言复制其文件名、语法或运行模型。
 
 ## 1. 架构原则
 
@@ -174,6 +175,19 @@
 
 只负责发现、注册、连接和启动切片，不实现业务规则。依赖关系必须在此处或等价的组合根中显式装配，避免通过隐式全局状态建立耦合。
 
+❌ 在组合根中混入业务判断：
+
+```python
+# composition/registry.py  # ❌
+def build_application(config):
+    if config.customer_level == "vip":
+        approval_limit = 100000
+    else:
+        approval_limit = 10000
+```
+
+客户等级对应审批额度属于业务规则，不应位于组合根。组合根只能选择和连接实现；业务决策应进入相应切片或领域规则。
+
 ### 2.4 切片内部组织规则
 
 切片目录规定的是**边界**，不是固定文件清单：
@@ -184,6 +198,29 @@
 4. 不得为了“整齐”把各切片的同类文件集中到全局 `controllers/`、`services/`、`repositories/`、`components/`、`stores/` 等横向目录。
 5. 切片对外只能暴露明确的公共入口或契约，内部文件默认不可被其他切片直接依赖。
 6. 测试应从切片的公共入口进入，并验证可观察结果，而不是只测试内部函数。
+
+❌ 只测试内部函数：
+
+```python
+# ❌ 只测试私有校验，未验证完整行为
+def test_validate_quantity():
+    assert validate_quantity(-1) is False
+```
+
+这种测试无法发现入口映射、依赖装配、状态写入、事件发布或错误转换中的问题。测试应从切片公共入口进入，验证输入到可观察结果的完整路径。
+
+❌ 一个处理器聚合多个用例：
+
+```python
+# features/order/manage_order/handler.py  # ❌
+class OrderHandler:
+    def create_order(self, command): ...
+    def cancel_order(self, command): ...
+    def approve_order(self, command): ...
+    def refund_order(self, command): ...
+```
+
+应拆为 `create_order`、`cancel_order`、`approve_order`、`refund_order` 四个切片。
 
 ### 2.5 多交付单元项目
 
@@ -313,10 +350,40 @@ features/order/_shared/
 from decimal import Decimal
 
 
-def calculate_total(unit_price: Decimal, quantity: int) -> Decimal:
-    if quantity <= 0:
-        raise ValueError("quantity must be positive")
-    return unit_price * quantity
+class OrderAmountExceededError(Exception):
+    pass
+
+
+def calculate_total(lines) -> Decimal:
+    return sum(
+        (line.unit_price * line.quantity for line in lines),
+        start=Decimal("0"),
+    )
+
+
+def assert_amount_within_limit(total: Decimal, limit: Decimal) -> None:
+    if total > limit:
+        raise OrderAmountExceededError(
+            f"order amount {total} exceeds limit {limit}"
+        )
+```
+
+切片调用这些纯规则，例如 `create_order` 和 `approve_order` 都需要计算订单总额并检查金额上限：
+
+```python
+# features/order/approve_order/handler.py
+from features.order._shared.rules import (
+    assert_amount_within_limit,
+    calculate_total,
+)
+
+
+def approve_order(command, *, orders, approval_limit):
+    order = orders.get(command.order_id)
+    total = calculate_total(order.lines)
+    assert_amount_within_limit(total, approval_limit)
+    order.approve()
+    orders.save(order)
 ```
 
 禁止：
@@ -329,7 +396,14 @@ class OrderService:
     def approve_order(self, command): ...
 ```
 
-`_shared/` 应当是被动依赖：切片调用它，它不反过来驱动切片。
+识别这类“伪装成共享模块的服务类”的信号：
+
+- 名称含 `service`、`manager`、`processor`、`coordinator`。
+- 暴露多个与不同用户意图对应的方法。
+- 被多个切片调用并持续增长。
+- 内部同时读写存储、发事件和调用外部系统。
+
+出现这些信号时，将每个独立行为拆为切片，只把稳定纯规则或契约留在 `_shared/`。`_shared/` 应当是被动依赖：切片调用它，它不反过来驱动切片。
 
 ### 3.3 全局共享
 
@@ -358,12 +432,23 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 ```
 
+❌ 全局共享目录业务化：
+
+```text
+shared/
+├── order_validator.py     ❌
+├── payment_manager.py     ❌
+└── user_repository.py     ❌
+```
+
 以下内容不得进入全局共享：
 
 - `OrderValidator`、`UserManager` 等包含领域名称的模块
 - 特定业务状态机或业务错误分支
 - 只服务于一个领域的查询或持久化逻辑
 - 跨领域业务流程编排
+
+这些模块包含明确领域语义，应归入对应领域或功能切片。
 
 ### 3.4 提升时机
 
@@ -404,28 +489,46 @@ from shared.transport.events import EventPublisher
 
 ### 4.2 允许方式二：发布领域事件或消息
 
-当一个切片完成后需要触发其他行为，尤其是通知、审计、同步、索引、异步处理等副作用时，应发布事件，而不是直接调用另一个切片。
+当一个切片完成后需要触发其他行为，尤其是通知、审计、同步、索引、异步处理等副作用时，应发布事件，而不是直接调用另一个切片。例如创建订单后需要发送确认通知，创建订单切片不应直接导入通知切片，而是发布领域事件：
+
+```python
+# features/order/_shared/events.py
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class OrderCreated:
+    order_id: str
+    user_id: str
+```
 
 ```python
 # features/order/create_order/handler.py
 from features.order._shared.events import OrderCreated
 
 
-def create_order(command, orders, events) -> str:
-    order = orders.create(command)
+def create_order(command, *, orders, events):
+    order = orders.create(
+        user_id=command.user_id,
+        lines=command.lines,
+    )
     events.publish(OrderCreated(order_id=order.id, user_id=order.user_id))
     return order.id
 ```
+
+订阅方是独立的通知切片：
 
 ```python
 # features/notification/send_order_confirmation/handler.py
 from features.order._shared.events import OrderCreated
 
 
-def handle_order_created(event: OrderCreated, mailer) -> None:
-    mailer.send_order_confirmation(
-        user_id=event.user_id,
-        order_id=event.order_id,
+def send_order_confirmation(event: OrderCreated, *, mailer, users) -> None:
+    recipient = users.get_email(event.user_id)
+    mailer.send(
+        recipient=recipient,
+        template="order_confirmation",
+        context={"order_id": event.order_id},
     )
 ```
 
@@ -433,10 +536,23 @@ def handle_order_created(event: OrderCreated, mailer) -> None:
 
 ```python
 # composition/event_registry.py
+from features.notification.send_order_confirmation.handler import (
+    send_order_confirmation,
+)
 
-def register_event_handlers(event_bus, send_confirmation):
-    event_bus.subscribe("order.created", send_confirmation)
+
+def register_event_handlers(event_bus, dependencies):
+    event_bus.subscribe(
+        event_type="order.created",
+        handler=lambda event: send_order_confirmation(
+            event,
+            mailer=dependencies.mailer,
+            users=dependencies.user_directory,
+        ),
+    )
 ```
+
+创建订单和发送通知各自保持独立。只有组合根知道二者如何连接。
 
 ### 4.3 允许方式三：通过公开协议或进程边界调用
 
@@ -503,6 +619,8 @@ __all__ = ["register_device"]
 - 导入另一个切片或领域的内部实现；
 - 不增加稳定协议，仅进行转发或重新导出；
 - 使调用方继续依赖被调用方的内部变化。
+
+处理方式：删除转发层，改为事件、公开 API 或重新划分领域边界。
 
 ### 4.6 公开契约规则
 
@@ -650,13 +768,9 @@ __all__ = ["register_device"]
 
 ---
 
-## 9. 典型代码示例
+## 9. 完整示例：新增“注册用户”切片
 
-本节使用 Python 作为示例语言。示例用于说明目录边界和依赖关系，不要求其他语言复制 Python 的文件名、语法或运行模型。
-
-### 示例一：新增“注册用户”切片
-
-#### 目录结构
+### 目录结构
 
 ```text
 application/
@@ -679,7 +793,7 @@ application/
 └── main.py
 ```
 
-#### 领域共享模型
+### 领域共享模型
 
 ```python
 # features/user/_shared/model.py
@@ -705,7 +819,7 @@ class UserRegistered:
     email: str
 ```
 
-#### 切片契约
+### 切片契约
 
 ```python
 # features/user/register_user/contracts.py
@@ -724,7 +838,7 @@ class RegisterUserResult:
     user_id: str
 ```
 
-#### 切片私有端口
+### 切片私有端口
 
 ```python
 # features/user/register_user/ports.py
@@ -750,7 +864,7 @@ class IdentifierGenerator(Protocol):
     def new_id(self) -> str: ...
 ```
 
-#### 业务处理
+### 业务处理
 
 ```python
 # features/user/register_user/handler.py
@@ -788,7 +902,7 @@ def register_user(
     return RegisterUserResult(user_id=user.id)
 ```
 
-#### 公共入口适配器
+### 公共入口适配器
 
 ```python
 # features/user/register_user/entry.py
@@ -819,7 +933,7 @@ def register_user_entry(payload: dict, dependencies) -> tuple[int, dict]:
 
 `entry.py` 可以被 HTTP、CLI、RPC 或其他技术入口调用。切片内部业务处理不依赖具体框架请求对象。
 
-#### 从公共入口测试完整行为
+### 从公共入口测试完整行为
 
 ```python
 # features/user/register_user/test_register_user.py
@@ -907,7 +1021,7 @@ def test_reject_duplicate_email_from_public_entry():
     assert body == {"error": "email_already_registered"}
 ```
 
-#### 在组合根中装配
+### 在组合根中装配
 
 ```python
 # composition/registry.py
@@ -940,275 +1054,7 @@ def build_dependencies(database) -> Dependencies:
 
 ---
 
-### 示例二：通过领域事件连接两个切片
-
-场景：创建订单后需要发送确认通知。创建订单切片不应直接导入通知切片。
-
-#### 事件定义
-
-```python
-# features/order/_shared/events.py
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class OrderCreated:
-    order_id: str
-    user_id: str
-```
-
-#### 发布事件
-
-```python
-# features/order/create_order/handler.py
-from features.order._shared.events import OrderCreated
-
-
-def create_order(command, *, orders, events):
-    order = orders.create(
-        user_id=command.user_id,
-        lines=command.lines,
-    )
-    events.publish(OrderCreated(order_id=order.id, user_id=order.user_id))
-    return order.id
-```
-
-#### 独立通知切片
-
-```python
-# features/notification/send_order_confirmation/handler.py
-from features.order._shared.events import OrderCreated
-
-
-def send_order_confirmation(event: OrderCreated, *, mailer, users) -> None:
-    recipient = users.get_email(event.user_id)
-    mailer.send(
-        recipient=recipient,
-        template="order_confirmation",
-        context={"order_id": event.order_id},
-    )
-```
-
-#### 组合根注册订阅关系
-
-```python
-# composition/event_registry.py
-from features.notification.send_order_confirmation.handler import (
-    send_order_confirmation,
-)
-
-
-def register_event_handlers(event_bus, dependencies):
-    event_bus.subscribe(
-        event_type="order.created",
-        handler=lambda event: send_order_confirmation(
-            event,
-            mailer=dependencies.mailer,
-            users=dependencies.user_directory,
-        ),
-    )
-```
-
-创建订单和发送通知各自保持独立。只有组合根知道二者如何连接。
-
----
-
-### 示例三：领域 `_shared/` 的正确使用
-
-场景：`create_order` 和 `approve_order` 都需要计算订单总额并检查金额上限。
-
-#### 正确做法：提取纯领域规则
-
-```python
-# features/order/_shared/rules.py
-from decimal import Decimal
-
-
-class OrderAmountExceededError(Exception):
-    pass
-
-
-def calculate_total(lines) -> Decimal:
-    return sum(
-        (line.unit_price * line.quantity for line in lines),
-        start=Decimal("0"),
-    )
-
-
-def assert_amount_within_limit(total: Decimal, limit: Decimal) -> None:
-    if total > limit:
-        raise OrderAmountExceededError(
-            f"order amount {total} exceeds limit {limit}"
-        )
-```
-
-切片可以调用这些纯规则：
-
-```python
-# features/order/approve_order/handler.py
-from features.order._shared.rules import (
-    assert_amount_within_limit,
-    calculate_total,
-)
-
-
-def approve_order(command, *, orders, approval_limit):
-    order = orders.get(command.order_id)
-    total = calculate_total(order.lines)
-    assert_amount_within_limit(total, approval_limit)
-    order.approve()
-    orders.save(order)
-```
-
-#### 错误做法：在 `_shared/` 编排多个用例
-
-```python
-# features/order/_shared/order_processing_service.py  # ❌
-class OrderProcessingService:
-    def create(self, command): ...
-    def approve(self, command): ...
-    def cancel(self, command): ...
-    def notify_customer(self, order): ...
-```
-
-该类包含多个独立行为和副作用，应拆回对应切片。
-
----
-
-## 10. 反模式识别
-
-### 反模式一：伪装成共享模块的服务类
-
-```text
-features/order/_shared/
-└── order_processing_service.py  ❌
-```
-
-识别信号：
-
-- 名称含 `service`、`manager`、`processor`、`coordinator`。
-- 暴露多个与不同用户意图对应的方法。
-- 被多个切片调用并持续增长。
-- 内部同时读写存储、发事件和调用外部系统。
-
-解决方案：将每个独立行为拆为切片，只把稳定纯规则或契约留在 `_shared/`。
-
----
-
-### 反模式二：切片目录只使用名词
-
-```text
-features/order/
-├── order/          ❌
-└── order_data/     ❌
-```
-
-名词只说明数据对象，不能说明行为边界。
-
-正确命名：
-
-```text
-features/order/
-├── create_order/
-├── cancel_order/
-└── get_order_detail/
-```
-
----
-
-### 反模式三：只测试内部函数
-
-```python
-# ❌ 只测试私有校验，未验证完整行为
-def test_validate_quantity():
-    assert validate_quantity(-1) is False
-```
-
-问题：无法发现入口映射、依赖装配、状态写入、事件发布或错误转换中的问题。
-
-正确做法：从切片公共入口进入，验证输入到可观察结果的完整路径。
-
----
-
-### 反模式四：一个处理器聚合多个用例
-
-```python
-# features/order/manage_order/handler.py  # ❌
-class OrderHandler:
-    def create_order(self, command): ...
-    def cancel_order(self, command): ...
-    def approve_order(self, command): ...
-    def refund_order(self, command): ...
-```
-
-解决方案：拆为 `create_order`、`cancel_order`、`approve_order`、`refund_order` 四个切片。
-
----
-
-### 反模式五：跨切片直接导入
-
-```python
-# features/order/approve_order/handler.py  # ❌
-from features.order.create_order.handler import validate_customer
-```
-
-解决方案：
-
-- 纯且稳定的同领域规则提升到 `_shared/`；
-- 副作用通过事件触发；
-- 跨领域查询使用公开协议；
-- 高度同步的行为重新评估切片边界。
-
----
-
-### 反模式六：伪装成 adapter 的跨领域耦合
-
-```python
-# features/campaign/_shared/device_adapter.py  # ❌
-from features.device.register_device.handler import register_device
-
-__all__ = ["register_device"]
-```
-
-识别信号：
-
-- 文件只做导入、包装和重新导出。
-- 没有定义独立、稳定的公开协议。
-- 目的是让跨领域内部调用看起来“合法”。
-
-解决方案：删除转发层，改为事件、公开 API 或重新划分领域边界。
-
----
-
-### 反模式七：组合根包含业务逻辑
-
-```python
-# composition/registry.py  # ❌
-def build_application(config):
-    if config.customer_level == "vip":
-        approval_limit = 100000
-    else:
-        approval_limit = 10000
-```
-
-客户等级对应审批额度属于业务规则，不应位于组合根。组合根只能选择和连接实现；业务决策应进入相应切片或领域规则。
-
----
-
-### 反模式八：全局共享目录业务化
-
-```text
-shared/
-├── order_validator.py     ❌
-├── payment_manager.py     ❌
-└── user_repository.py     ❌
-```
-
-这些模块包含明确领域语义，应归入对应领域或功能切片。
-
----
-
-## 11. 边界情况决策指南
+## 10. 边界情况决策指南
 
 ### Q1：两个不同领域需要相似校验，是否应该共享？
 
@@ -1224,21 +1070,7 @@ shared/
 
 ### Q2：多个切片都需要发送通知，如何处理？
 
-建立独立通知切片，由其他切片发布领域事件触发：
-
-```python
-# 发布方
-
-events.publish(OrderCreated(order_id=order.id, user_id=order.user_id))
-```
-
-```python
-# 通知切片
-
-def send_order_confirmation(event, *, mailer, users):
-    recipient = users.get_email(event.user_id)
-    mailer.send(recipient=recipient, template="order_confirmation")
-```
+建立独立的通知切片：业务切片完成状态变更后发布领域事件，通知切片订阅事件并完成发送，订阅关系在组合根中注册。
 
 通用邮件客户端可以位于 `shared/transport/`，但“发送订单确认邮件”仍是具有业务语义的独立切片。
 
