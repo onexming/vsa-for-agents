@@ -1,49 +1,30 @@
 # 示例：注册用户垂直切片
 
-本示例只展示边界如何贯通，不规定其他语言复制 Python 的文件名、类型系统或运行模型。创建真实功能时，以仓库现有工具链和已加载的专题规范为准。
+本示例在仓库没有可靠范例时展示一条最小完整路径：公开契约 → 私有实现 → 公共入口 → 行为测试 → 组合根。它只表达职责边界；语言、框架、文件数量和名称服从项目工具链与已加载规范。
 
-## 目录
+## 边界地图
 
 ```text
 application/
-├── features/user/
-│   ├── _shared/
-│   │   ├── model.py
-│   │   └── events.py
-│   └── register_user/
-│       ├── contracts.py
-│       ├── ports.py
-│       ├── handler.py
-│       ├── entry.py
-│       └── test_register_user.py
-├── shared/runtime/identifiers.py
-├── composition/registry.py
+├── features/user/register_user/
+│   ├── contracts.py               # 公开输入、输出、错误与事件契约
+│   ├── entry.py                   # 公共入口
+│   ├── model.py                   # 切片私有模型
+│   ├── ports.py                   # 切片私有能力契约
+│   ├── handler.py                 # 切片私有业务流程
+│   ├── sql_user_store.py          # 切片私有持久化适配
+│   └── test_register_user.py      # 从公共入口验证完整行为
+├── shared/
+│   ├── runtime/identifiers.py     # 无业务语义的标识符生成
+│   ├── security/passwords.py      # 无业务语义的密码散列
+│   └── transport/events.py        # 无业务语义的事件基础设施
+├── composition/registry.py        # 具体依赖与入口注册
 └── main.py
 ```
 
-## 领域定义与切片契约
+`User` 和数据访问先保持切片私有；只有出现符合 [`shared-code.md`](shared-code.md) 的真实复用后才逐级提升。`UserRegistered` 是切片明确公开的事件契约，不要求消费方读取处理器或模型。
 
-```python
-# features/user/_shared/model.py
-from dataclasses import dataclass
-
-@dataclass
-class User:
-    id: str
-    email: str
-    username: str
-    password_hash: str
-```
-
-```python
-# features/user/_shared/events.py
-from dataclasses import dataclass
-
-@dataclass(frozen=True)
-class UserRegistered:
-    user_id: str
-    email: str
-```
+## 公开契约与私有模型
 
 ```python
 # features/user/register_user/contracts.py
@@ -58,14 +39,34 @@ class RegisterUserCommand:
 @dataclass(frozen=True)
 class RegisterUserResult:
     user_id: str
+
+@dataclass(frozen=True)
+class UserRegistered:
+    user_id: str
+    email: str
+
+class EmailAlreadyRegisteredError(Exception):
+    pass
 ```
 
-## 切片私有端口
+```python
+# features/user/register_user/model.py
+from dataclasses import dataclass
+
+@dataclass
+class User:
+    id: str
+    email: str
+    username: str
+    password_hash: str
+```
+
+## 私有端口与业务流程
 
 ```python
 # features/user/register_user/ports.py
 from typing import Protocol
-from features.user._shared.model import User
+from .model import User
 
 class UserStore(Protocol):
     def find_by_email(self, email: str) -> User | None: ...
@@ -81,26 +82,18 @@ class IdentifierGenerator(Protocol):
     def new_id(self) -> str: ...
 ```
 
-## 业务处理
-
 ```python
 # features/user/register_user/handler.py
-from features.user._shared.events import UserRegistered
-from features.user._shared.model import User
-from .contracts import RegisterUserCommand, RegisterUserResult
+from .contracts import (
+    EmailAlreadyRegisteredError,
+    RegisterUserCommand,
+    RegisterUserResult,
+    UserRegistered,
+)
+from .model import User
 from .ports import EventPublisher, IdentifierGenerator, PasswordHasher, UserStore
 
-class EmailAlreadyRegisteredError(Exception):
-    pass
-
-def register_user(
-    command: RegisterUserCommand,
-    *,
-    users: UserStore,
-    password_hasher: PasswordHasher,
-    events: EventPublisher,
-    identifiers: IdentifierGenerator,
-) -> RegisterUserResult:
+def register_user(command, *, users, password_hasher, events, identifiers):
     if users.find_by_email(command.email) is not None:
         raise EmailAlreadyRegisteredError(command.email)
 
@@ -119,10 +112,19 @@ def register_user(
 
 ```python
 # features/user/register_user/entry.py
-from .contracts import RegisterUserCommand
-from .handler import EmailAlreadyRegisteredError, register_user
+from dataclasses import dataclass
+from .contracts import RegisterUserCommand, EmailAlreadyRegisteredError
+from .handler import register_user
+from .ports import EventPublisher, IdentifierGenerator, PasswordHasher, UserStore
 
-def register_user_entry(payload: dict, dependencies) -> tuple[int, dict]:
+@dataclass
+class Dependencies:
+    users: UserStore
+    password_hasher: PasswordHasher
+    events: EventPublisher
+    identifiers: IdentifierGenerator
+
+def register_user_entry(payload: dict, dependencies: Dependencies) -> tuple[int, dict]:
     command = RegisterUserCommand(
         email=payload["email"],
         username=payload["username"],
@@ -141,14 +143,14 @@ def register_user_entry(payload: dict, dependencies) -> tuple[int, dict]:
     return 201, {"user_id": result.user_id}
 ```
 
-HTTP、CLI 或 RPC 适配器可以调用此入口；业务处理无需知道具体框架请求对象。
+HTTP、CLI 或 RPC 适配器调用同一入口；业务流程不接触框架请求对象。
 
 ## 从公共入口测试
 
 ```python
 # features/user/register_user/test_register_user.py
-from dataclasses import dataclass
-from features.user.register_user.entry import register_user_entry
+from .contracts import UserRegistered
+from .entry import Dependencies, register_user_entry
 
 class InMemoryUsers:
     def __init__(self): self.items = {}
@@ -166,13 +168,6 @@ class RecordedEvents:
 class FixedIdentifiers:
     def new_id(self): return "user-001"
 
-@dataclass
-class Dependencies:
-    users: InMemoryUsers
-    password_hasher: FakeHasher
-    events: RecordedEvents
-    identifiers: FixedIdentifiers
-
 def make_dependencies():
     return Dependencies(
         InMemoryUsers(), FakeHasher(), RecordedEvents(), FixedIdentifiers()
@@ -185,8 +180,10 @@ def test_register_user_from_public_entry():
         dependencies,
     )
     assert (status, body) == (201, {"user_id": "user-001"})
-    assert dependencies.users.items["user-001"].email == "test@example.com"
-    assert len(dependencies.events.items) == 1
+    assert dependencies.users.items["user-001"].password_hash == "hashed:secret"
+    assert dependencies.events.items == [
+        UserRegistered(user_id="user-001", email="test@example.com")
+    ]
 
 def test_reject_duplicate_email_from_public_entry():
     dependencies = make_dependencies()
@@ -194,32 +191,34 @@ def test_reject_duplicate_email_from_public_entry():
     assert register_user_entry(payload, dependencies)[0] == 201
     status, body = register_user_entry(payload | {"username": "second"}, dependencies)
     assert (status, body) == (409, {"error": "email_already_registered"})
+    assert len(dependencies.users.items) == 1
+    assert len(dependencies.events.items) == 1
 ```
+
+测试观察公开响应、持久化状态、领域事件和主要失败路径；内部函数测试只能补充这些行为测试。
 
 ## 在组合根装配
 
 ```python
 # composition/registry.py
-from dataclasses import dataclass
-from shared.persistence.users import SqlUserStore
+from features.user.register_user.entry import Dependencies, register_user_entry
+from features.user.register_user.sql_user_store import SqlUserStore
 from shared.runtime.identifiers import UuidGenerator
 from shared.security.passwords import ArgonPasswordHasher
 from shared.transport.events import InProcessEventBus
 
-@dataclass
-class Dependencies:
-    users: SqlUserStore
-    password_hasher: ArgonPasswordHasher
-    events: InProcessEventBus
-    identifiers: UuidGenerator
-
-def build_dependencies(database) -> Dependencies:
-    return Dependencies(
+def register_user_route(router, database):
+    dependencies = Dependencies(
         users=SqlUserStore(database),
         password_hasher=ArgonPasswordHasher(),
         events=InProcessEventBus(),
         identifiers=UuidGenerator(),
     )
+    router.post("/users", lambda payload: register_user_entry(payload, dependencies))
 ```
 
-组合根知道具体实现；切片只依赖自身声明的能力契约。示例完整性的判定是：输入能经公共入口到达业务处理，状态和事件可观察，失败被转换为公开错误，并且具体依赖只在组合根出现。
+组合根只选择实现并注册入口；注册资格、重复邮箱判断和状态变化仍在切片中。
+
+## 示例完成标准
+
+该示例仅在以下关系全部成立时可作为实现参照：输入经公共入口到达单一行为，成功与失败映射为公开结果，状态和事件可观察，业务代码保持切片私有，技术共享不含领域语义，具体依赖只在组合根连接。

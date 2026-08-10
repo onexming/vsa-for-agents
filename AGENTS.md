@@ -1,44 +1,34 @@
-# 项目工作规则
+# 架构行动指南
 
-## 架构约束
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) 定义本仓库的架构目标、边界与强制规则；`docs/architecture/` 将其展开为按任务加载的执行规范。本文件只负责路由、执行闭环和授权闸门。
 
-本仓库采用垂直切片架构。以下规则作用于所有新增和修改的代码；本文件及其指向的专题文档是架构规范的唯一权威来源。
+## 任务路由
 
-- 按“交付单元 → 业务领域 → 用户意图”组织业务代码。一个切片表达一个命令、查询、用户操作或外部事件处理目标。
-- 每个切片必须具有明确的公共入口、完成行为所需的私有实现，以及返回值、状态变化、事件、消息、文件或界面变化等可观察结果。
-- 测试必须从公共入口验证完整行为及主要失败路径；内部函数测试只能作为补充。
-- 切片内部文件默认私有。切片之间通过领域事件、公开协议或组合根中的明确关系协作。
-- 共享代码遵循“切片私有 → 领域 `_shared/` → 全局 `shared/`”的逐级提升路径。允许切片内存在小规模重复，按真实复用而非预期复用提取。
-- 领域 `_shared/` 只容纳被动的稳定定义或无副作用规则；全局 `shared/` 只容纳无业务语义的技术基础设施。
-- 组合根只负责发现、注册、装配和启动，不承载业务判断。所有入口和依赖必须显式装配。
-- 框架、协议和部署形态可以改变适配方式，但不得改变业务边界和依赖方向。
+在勘察或修改前，列出任务命中的全部分支并完整读完相应文件；同时命中多个分支时全部加载。
 
-## 渐进式披露
-
-在开始相关修改前，完整读取命中的每个专题文件；同时命中多个分支时不得只选择其中一个。
-
-- **功能切片：** 从零设计项目，新增、修改、移动或拆分功能，或者设计和审查源码根、全局职责、领域、切片、命名及入口时，读取 [`docs/architecture/feature-work.md`](docs/architecture/feature-work.md)。
-- **测试放置：** 新增、修改、移动或审查任何测试文件，或者测试环境定义、搭建、种子及清理文件时，读取 [`docs/architecture/test-placement.md`](docs/architecture/test-placement.md)。
-- **共享提取：** 创建或修改 `_shared/`、`shared/`、Repository、公共模型、规则或工具时，读取 [`docs/architecture/shared-code.md`](docs/architecture/shared-code.md)。
-- **边界通信：** 引入切片间调用、跨领域读取、事件、消息、API、RPC 或跨交付单元协作时，读取 [`docs/architecture/cross-boundary-communication.md`](docs/architecture/cross-boundary-communication.md)。
-- **架构例外：** 遇到框架固定目录、生成代码、遗留兼容或准备偏离任一规则时，读取 [`docs/architecture/exceptions.md`](docs/architecture/exceptions.md) 及相关 ADR。
-- **复合判断：** 遇到跨领域相似校验、持续膨胀的切片或高扇入共享模块时，读取 [`docs/architecture/edge-cases.md`](docs/architecture/edge-cases.md)。
-- **实现范例：** 创建新切片且现有代码没有可靠范例时，读取 [`docs/architecture/example-vertical-slice.md`](docs/architecture/example-vertical-slice.md)。
+- **架构定义：** 新增、修改或审查架构规则，或者专题规范无法覆盖当前判断时，读取 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+- **功能边界：** 设计项目结构，或改动源码根、全局职责、领域、切片、命名及公共入口时，读取 [`docs/architecture/feature-work.md`](docs/architecture/feature-work.md)。
+- **测试归属：** 改动测试、测试环境、搭建、种子或清理文件时，读取 [`docs/architecture/test-placement.md`](docs/architecture/test-placement.md)。
+- **共享提取：** 改动 `_shared/`、`shared/`、Repository、公共模型、规则或工具时，读取 [`docs/architecture/shared-code.md`](docs/architecture/shared-code.md)。
+- **边界协作：** 改动切片间调用、跨领域读取、事件、消息、API、RPC 或跨交付单元协作时，读取 [`docs/architecture/cross-boundary-communication.md`](docs/architecture/cross-boundary-communication.md)。
+- **架构例外：** 受框架固定目录、生成代码或遗留兼容约束，或者计划偏离架构规则时，读取 [`docs/architecture/exceptions.md`](docs/architecture/exceptions.md) 及相关 ADR。
+- **复合边界：** 判断跨领域相似校验、持续膨胀的切片或高扇入共享模块时，读取 [`docs/architecture/edge-cases.md`](docs/architecture/edge-cases.md)。
+- **实现范例：** 创建新切片且仓库内没有可靠范例时，读取 [`docs/architecture/example-vertical-slice.md`](docs/architecture/example-vertical-slice.md)。
 
 ## 执行闭环
 
-1. **分类：** 判断任务命中了哪些披露分支；对应文件全部读完后，此步完成。
-2. **勘察：** 找到现有切片、公共契约、直接依赖方、组合根和相关测试；受影响边界无遗漏后，此步完成。
-3. **实现：** 完成功能，并修复本次任务触发的最小违规依赖闭包；闭包内不再违反已加载规则后，此步完成。
-4. **验证：** 从公共入口验证成功路径、主要失败路径和可观察结果，并执行可用的依赖检查、静态检查及测试；所有相关检查通过后，此步完成。
-5. **交付：** 说明读取了哪些专题规范、修改了哪些边界、修复了哪些架构冲突及验证结果。
+1. **分类：** 列出命中的路由分支及适用规则；所有目标文件均已读完且没有遗漏受影响分支时完成。
+2. **勘察：** 定位交付单元、领域、切片、公共入口、公开契约、直接依赖方、组合根和相关测试；最小依赖闭包已完整列出时完成。
+3. **实现：** 在闭包内完成行为，并修复本次变更触发的违规依赖；目标行为存在且闭包符合已加载规则时完成。
+4. **验证：** 对行为变更，从公共入口验证成功路径、主要失败路径和可观察结果；运行适用的依赖检查、静态检查及测试。已执行检查全部通过，无法执行的检查及原因已记录时完成。
+5. **交付：** 说明读取的规范、修改的边界、修复的架构冲突、验证结果及未执行检查；上述信息齐全时完成。
 
-最小依赖闭包包括当前切片、消除违规依赖所必需的直接调用方或提供方、相关公开契约、组合根、测试和边界检查。闭包达到合规且验证通过时停止；不得把未触发的遗留违规扩大为全仓库迁移。
+**最小依赖闭包**包括目标切片、为消除违规依赖所必需的直接调用方或提供方、相关公开契约、组合根、测试和边界检查。闭包合规且验证通过后停止扩展，不把未触发的遗留问题扩大为全仓库迁移。
 
-## 安全闸门与完成标准
+## 授权闸门
 
-仓库内可验证、可回退的架构重构可以直接完成。若合规需要破坏公开 API、迁移持久化数据、改变外部系统或新增生产依赖，先取得用户确认。
+- **直接执行：** 用户已要求实现时，可直接完成仓库内可验证、可回退且位于最小依赖闭包内的实现与架构重构。
+- **先行确认：** 破坏公开 API、迁移持久化数据、改变外部系统或新增生产依赖。
+- **例外处理：** 按 [`docs/architecture/exceptions.md`](docs/architecture/exceptions.md) 沿用有效 ADR；建立新例外前取得用户确认，并记录迁移目标和移除条件。
 
-语言或平台强制约束、生成代码和遗留兼容只能按 [`docs/architecture/exceptions.md`](docs/architecture/exceptions.md) 处理。沿用已有 ADR；建立新例外前取得用户确认，并记录迁移目标和移除条件。
-
-任务仅在以下条件全部成立时完成：行为可从公共入口观察并通过验证；依赖方向合规；共享位置合规；组合根不含业务规则；命中的专题文件全部应用；任何例外均有有效 ADR。
+只有执行闭环全部完成、授权闸门得到满足且任何例外均有有效 ADR，才能宣布任务完成。

@@ -1,0 +1,1 @@
+- **禁止**修改 ARCHITECTURE.md
