@@ -4,7 +4,7 @@
   - 禁止出现 “变更记录、修订说明、已替代/废弃”等历史痕迹
   - 禁止编写 向后兼容(Backward Compatibility) 、迁移(Migration) 、兜底(Fallback) 代码
 - **禁止重复造轮子**：优先使用成熟的、有人维护的工具/库/包
-- **禁止软约束(文字描述)**：使用强约束，例如Python必须使用：Ruff、Pyright、**ImportLinter**、Bandit、Gitleaks、deptry、pytest、pytest-cov、diff-cover，其他语言必须使用对应的工具
+- **禁止软约束(文字描述)**：使用强约束，例如Python必须使用：Ruff、Pyright、**ImportLinter**、Bandit、Gitleaks、deptry、pytest、pytest-cov、diff-cover，**其他语言必须使用对应的工具**
 - **快速失败(Fail Fast) 原则**：禁止编写静默失败的代码，错误应该在离发生源最近的地方被发现和处理，而不是静默传播，掩盖问题
 - **可测试性优先**：依赖显式注入，核心逻辑保持纯粹，副作用集中在边界，状态可控且结果可观察，减少测试时的Mock
 

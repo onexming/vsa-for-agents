@@ -6,6 +6,10 @@
 
 ## 约束(提高AI代码质量的下限)
 
+Uncle Bob Martin:
+>I’m significantly older than you. I started coding in the late 60s. My current strategy is to not read any of the code written by my agents. That’s the only way I can take advantage of their productivity. What I do instead is to surround the agents with extreme constraints. Unit tests, gherkin tests, QA procedures, quality metrics, mutation testing, test coverage, and a plethora of others. In the end, I have very high confidence in the code they produce because they’ve had to run the gauntlet of all of my constraints and tests. 我目前的策略是完全不读 agent 写的任何代码。只有这样，我才能真正享受它们带来的生产力。我做的是用极端的约束把 agent 包围起来：单元测试、gherkin 测试、QA 流程、质量指标、mutation testing、测试覆盖率，以及其他一大堆手段。最终我对它们产出的代码有非常高的信心，因为这些代码闯过了我所有约束和测试组成的关卡（gauntlet）。
+
+
 以严格的**强制约束**限制AI写出符合VSA规范的代码，确保代码质量。
 
 ### 代码质量约束
