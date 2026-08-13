@@ -41,6 +41,9 @@
     - /improve-codebase-architecture 帮助提升代码质量、可维护性
 - https://github.com/markdown-viewer/skills.git 生成漂亮的图表
 
+# Claude Code 技巧
+- 实现类似codex app Side窗口功能：`claude --resume {session_id} --fork-session`
+
 # Links
 
 - https://github.com/AmazingAng/old-coder.git
